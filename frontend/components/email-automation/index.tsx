@@ -47,6 +47,7 @@ export default function EmailAutomation() {
     messages_per_block: 100,
     max_connections: 5,
     retries: 1,
+    selectedAccounts: []
   })
   
   // State for campaign status
