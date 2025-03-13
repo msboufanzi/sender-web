@@ -111,7 +111,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
     const newContact: Contact = {
       email: newEmail,
       name: "",
-      language: "FR"
+      language: "EN"
     }
 
     setContacts([...contacts, newContact])
@@ -187,7 +187,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
         newContacts.push({
           email,
           name: "",
-          language: "FR"
+          language: "EN"
         })
       }
     })

@@ -14,6 +14,7 @@ import json
 import base64
 import secrets
 import logging
+import uuid
 from datetime import timedelta
 from dotenv import load_dotenv
 import google.oauth2.credentials
@@ -73,7 +74,9 @@ campaign_status = {
     'errors': [],
     'completed': False
 }
-oauth_tokens = {}
+
+# Store email accounts (both Gmail OAuth and SMTP)
+email_accounts = {}
 
 # Store uploaded files
 data_folder = 'data'
@@ -258,17 +261,25 @@ def oauth2callback():
                 logger.error(f"Error extracting email from ID token: {str(jwt_error)}")
                 return error_page(f"Could not get user email: {str(profile_error)}")
         
-        # Store tokens with user email as key
-        oauth_tokens[user_email] = {
-            'token': credentials.token,
-            'refresh_token': credentials.refresh_token,
-            'token_uri': credentials.token_uri,
-            'client_id': credentials.client_id,
-            'client_secret': credentials.client_secret,
-            'scopes': credentials.scopes
+        # Store account in email_accounts
+        account_id = str(uuid.uuid4())
+        email_accounts[account_id] = {
+            'id': account_id,
+            'type': 'gmail',
+            'email': user_email,
+            'name': user_email.split('@')[0],
+            'isConnected': True,
+            'credentials': {
+                'token': credentials.token,
+                'refresh_token': credentials.refresh_token,
+                'token_uri': credentials.token_uri,
+                'client_id': credentials.client_id,
+                'client_secret': credentials.client_secret,
+                'scopes': credentials.scopes
+            }
         }
         
-        logger.info(f"OAuth tokens stored for {user_email}")
+        logger.info(f"OAuth account stored for {user_email}")
 
         # Return HTML that will send a message to the opener and close itself
         return success_page(user_email)
@@ -370,22 +381,193 @@ def error_page(error_message):
     </html>
     """
 
+@app.route('/smtp/accounts', methods=['GET'])
+def get_accounts():
+    """Get all email accounts (both Gmail and SMTP)"""
+    return jsonify({"accounts": list(email_accounts.values())})
+
+@app.route('/smtp/accounts', methods=['POST'])
+def add_smtp_account():
+    """Add a new SMTP account"""
+    try:
+        data = request.json
+        
+        # Validate required fields
+        if not all([data.get('name'), data.get('email'), data.get('host'), 
+                   data.get('port'), data.get('username'), data.get('password')]):
+            return jsonify({"error": "All fields are required"}), 400
+        
+        # Create a new account ID
+        account_id = str(uuid.uuid4())
+        
+        # Store the account
+        email_accounts[account_id] = {
+            'id': account_id,
+            'type': 'smtp',
+            'name': data['name'],
+            'email': data['email'],
+            'host': data['host'],
+            'port': data['port'],
+            'username': data['username'],
+            'password': data['password'],
+            'use_ssl': data.get('use_ssl', False),
+            'isConnected': False  # Will be set to True after testing
+        }
+        
+        logger.info(f"SMTP account added: {data['email']}")
+        return jsonify({"message": "SMTP account added successfully", "id": account_id})
+    except Exception as e:
+        logger.error(f"Error adding SMTP account: {str(e)}")
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/smtp/accounts/<account_id>', methods=['DELETE'])
+def delete_account(account_id):
+    """Delete an email account"""
+    if account_id in email_accounts:
+        del email_accounts[account_id]
+        logger.info(f"Account deleted: {account_id}")
+        return jsonify({"message": "Account deleted successfully"})
+    return jsonify({"error": "Account not found"}), 404
+
+@app.route('/smtp/test', methods=['POST'])
+def test_account():
+    """Test an email account connection"""
+    try:
+        data = request.json
+        account_id = data.get('accountId')
+        test_email = data.get('testEmail')
+        
+        if not account_id:
+            return jsonify({"error": "Account ID is required"}), 400
+            
+        if account_id not in email_accounts:
+            return jsonify({"error": "Account not found"}), 404
+            
+        account = email_accounts[account_id]
+        
+        # Test the account based on its type
+        if account['type'] == 'gmail':
+            # Test Gmail OAuth account
+            try:
+                credentials = Credentials(
+                    token=account['credentials']['token'],
+                    refresh_token=account['credentials']['refresh_token'],
+                    token_uri=account['credentials']['token_uri'],
+                    client_id=account['credentials']['client_id'],
+                    client_secret=account['credentials']['client_secret'],
+                    scopes=account['credentials']['scopes']
+                )
+                
+                service = build('gmail', 'v1', credentials=credentials)
+                
+                # Just get the profile to test the connection
+                profile = service.users().getProfile(userId='me').execute()
+                
+                # If test email is provided, send a test email
+                if test_email:
+                    message = MIMEMultipart()
+                    message['to'] = test_email
+                    message['subject'] = "Test Email from Email Automation System"
+                    
+                    body = "This is a test email to verify your Gmail account connection."
+                    message.attach(MIMEText(body, 'plain'))
+                    
+                    # Encode the message
+                    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                    
+                    # Create the message
+                    create_message = {
+                        'raw': encoded_message
+                    }
+                    
+                    # Send the message
+                    send_message = service.users().messages().send(
+                        userId="me", body=create_message).execute()
+                
+                # Update account status
+                email_accounts[account_id]['isConnected'] = True
+                
+                logger.info(f"Gmail account tested successfully: {account['email']}")
+                return jsonify({"message": "Gmail account connection successful"})
+            except Exception as e:
+                logger.error(f"Error testing Gmail account: {str(e)}")
+                email_accounts[account_id]['isConnected'] = False
+                return jsonify({"error": f"Gmail API Error: {str(e)}"}), 400
+        else:
+            # Test SMTP account
+            try:
+                host = account['host']
+                port = account['port']
+                username = account['username']
+                password = account['password']
+                use_ssl = account.get('use_ssl', False)
+                
+                # If test email is provided, send a test email
+                if test_email:
+                    msg = MIMEMultipart()
+                    msg['From'] = username
+                    msg['To'] = test_email
+                    msg['Subject'] = "Test Email from Email Automation System"
+                    
+                    body = "This is a test email to verify your SMTP configuration is working correctly."
+                    msg.attach(MIMEText(body, 'plain'))
+                    
+                    if use_ssl:
+                        server = smtplib.SMTP_SSL(host, port)
+                    else:
+                        server = smtplib.SMTP(host, port)
+                        server.starttls()
+                        
+                    server.login(username, password)
+                    
+                    if test_email:
+                        server.send_message(msg)
+                    
+                    server.quit()
+                else:
+                    # Just test the connection without sending an email
+                    if use_ssl:
+                        server = smtplib.SMTP_SSL(host, port)
+                    else:
+                        server = smtplib.SMTP(host, port)
+                        server.starttls()
+                        
+                    server.login(username, password)
+                    server.quit()
+                
+                # Update account status
+                email_accounts[account_id]['isConnected'] = True
+                
+                logger.info(f"SMTP account tested successfully: {account['email']}")
+                return jsonify({"message": "SMTP account connection successful"})
+            except Exception as e:
+                logger.error(f"Error testing SMTP account: {str(e)}")
+                email_accounts[account_id]['isConnected'] = False
+                return jsonify({"error": f"SMTP Error: {str(e)}"}), 400
+    except Exception as e:
+        logger.error(f"Error testing account: {str(e)}")
+        return jsonify({"error": str(e)}), 400
+
 @app.route('/gmail-status', methods=['GET'])
 def gmail_status():
     email = request.args.get('email')
-    if email and email in oauth_tokens:
-        return jsonify({"connected": True, "email": email})
+    
+    # Check if the email exists in any of the accounts
+    for account_id, account in email_accounts.items():
+        if account['type'] == 'gmail' and account['email'] == email:
+            return jsonify({"connected": True, "email": email, "accountId": account_id})
+    
     return jsonify({"connected": False})
 
 @app.route('/revoke-oauth', methods=['POST'])
 def revoke_oauth():
-    email = request.args.get('email')
-    if email and email in oauth_tokens:
-        # Remove the token from our storage
-        del oauth_tokens[email]
-        logger.info(f"OAuth token revoked for {email}")
-        return jsonify({"message": "OAuth token revoked successfully"})
-    return jsonify({"error": "Email not found or not connected"}), 404
+    account_id = request.args.get('accountId')
+    if account_id and account_id in email_accounts:
+        # Remove the account
+        account = email_accounts.pop(account_id)
+        logger.info(f"OAuth account revoked: {account['email']}")
+        return jsonify({"message": "OAuth account revoked successfully"})
+    return jsonify({"error": "Account not found or not connected"}), 404
 
 @app.route('/save-smtp-config', methods=['POST'])
 def save_smtp_config():
@@ -592,75 +774,75 @@ def test_email():
     try:
         data = request.json
         test_email = data.get('test_email')
+        account_id = data.get('accountId')
         
         if not test_email:
             return jsonify({"error": "Test email address is required"}), 400
             
-        use_gmail_oauth = data.get('use_gmail_oauth', False)
+        if not account_id or account_id not in email_accounts:
+            return jsonify({"error": "Valid account ID is required"}), 400
+            
+        account = email_accounts[account_id]
         
-        if use_gmail_oauth:
-            gmail_user = data.get('gmail_user', '')
-            if gmail_user not in oauth_tokens:
-                return jsonify({"error": "Gmail OAuth not connected or expired"}), 400
-                
+        if account['type'] == 'gmail':
             # Send test email using Gmail API
-            creds_dict = oauth_tokens[gmail_user]
-            credentials = Credentials(
-                token=creds_dict['token'],
-                refresh_token=creds_dict['refresh_token'],
-                token_uri=creds_dict['token_uri'],
-                client_id=creds_dict['client_id'],
-                client_secret=creds_dict['client_secret'],
-                scopes=creds_dict['scopes']
-            )
-            
-            service = build('gmail', 'v1', credentials=credentials)
-            
-            message = MIMEMultipart()
-            message['to'] = test_email
-            message['subject'] = "Test Email from Email Automation System"
-            
-            body = "This is a test email to verify your SMTP configuration is working correctly."
-            message.attach(MIMEText(body, 'plain'))
-            
-            # Encode the message
-            encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-            
-            # Create the message
-            create_message = {
-                'raw': encoded_message
-            }
-            
-            # Send the message
-            send_message = service.users().messages().send(
-                userId="me", body=create_message).execute()
-            
-            logger.info(f"Test email sent via Gmail API to {test_email}")
-            return jsonify({"message": "Test email sent successfully via Gmail API"})
+            try:
+                credentials = Credentials(
+                    token=account['credentials']['token'],
+                    refresh_token=account['credentials']['refresh_token'],
+                    token_uri=account['credentials']['token_uri'],
+                    client_id=account['credentials']['client_id'],
+                    client_secret=account['credentials']['client_secret'],
+                    scopes=account['credentials']['scopes']
+                )
+                
+                service = build('gmail', 'v1', credentials=credentials)
+                
+                message = MIMEMultipart()
+                message['to'] = test_email
+                message['subject'] = "Test Email from Email Automation System"
+                
+                body = "This is a test email to verify your Gmail account connection."
+                message.attach(MIMEText(body, 'plain'))
+                
+                # Encode the message
+                encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                
+                # Create the message
+                create_message = {
+                    'raw': encoded_message
+                }
+                
+                # Send the message
+                send_message = service.users().messages().send(
+                    userId="me", body=create_message).execute()
+                
+                logger.info(f"Test email sent via Gmail API to {test_email}")
+                return jsonify({"message": "Test email sent successfully via Gmail API"})
+            except Exception as e:
+                logger.error(f"Gmail API Error: {str(e)}")
+                return jsonify({"error": f"Gmail API Error: {str(e)}"}), 400
         else:
             # Send test email using SMTP
-            smtp_host = data.get('smtp_host')
-            port = data.get('port')
-            username = data.get('username')
-            password = data.get('password')
-            use_ssl = data.get('use_ssl', False)
-            
-            if not all([smtp_host, port, username, password]):
-                return jsonify({"error": "All SMTP fields are required"}), 400
-                
-            msg = MIMEMultipart()
-            msg['From'] = username
-            msg['To'] = test_email
-            msg['Subject'] = "Test Email from Email Automation System"
-            
-            body = "This is a test email to verify your SMTP configuration is working correctly."
-            msg.attach(MIMEText(body, 'plain'))
-            
             try:
+                host = account['host']
+                port = account['port']
+                username = account['username']
+                password = account['password']
+                use_ssl = account.get('use_ssl', False)
+                
+                msg = MIMEMultipart()
+                msg['From'] = username
+                msg['To'] = test_email
+                msg['Subject'] = "Test Email from Email Automation System"
+                
+                body = "This is a test email to verify your SMTP configuration is working correctly."
+                msg.attach(MIMEText(body, 'plain'))
+                
                 if use_ssl:
-                    server = smtplib.SMTP_SSL(smtp_host, port)
+                    server = smtplib.SMTP_SSL(host, port)
                 else:
-                    server = smtplib.SMTP(smtp_host, port)
+                    server = smtplib.SMTP(host, port)
                     server.starttls()
                     
                 server.login(username, password)
@@ -707,22 +889,30 @@ def send_emails():
     
     try:
         data = request.json
-        use_gmail_oauth = data.get('use_gmail_oauth', False)
-        gmail_user = data.get('gmail_user', '')
+        selected_account_ids = data.get('selectedAccounts', [])
         
-        if use_gmail_oauth:
-            if gmail_user not in oauth_tokens:
-                return jsonify({"error": "Gmail OAuth not connected or expired"}), 400
-        else:
-            smtp_host = data['smtp_host']
-            port = data['port']
-            username = data['username']
-            password = data['password']
+        if not selected_account_ids:
+            return jsonify({"error": "Please select at least one email account"}), 400
+            
+        # Validate that all selected accounts exist and are connected
+        valid_accounts = []
+        for account_id in selected_account_ids:
+            if account_id in email_accounts:
+                account = email_accounts[account_id]
+                if account['isConnected']:
+                    valid_accounts.append(account)
+                else:
+                    return jsonify({"error": f"Account {account['email']} is not connected"}), 400
+            else:
+                return jsonify({"error": f"Account ID {account_id} not found"}), 400
+                
+        if not valid_accounts:
+            return jsonify({"error": "No valid connected accounts selected"}), 400
         
         subject = data['subject']
-        delay = int(data['pause_between_messages'])
-        retries = int(data['retries'])
-        max_connections = int(data['max_connections'])
+        delay = int(data.get('pauseBetweenMessages', 5))
+        retries = int(data.get('retries', 1))
+        max_connections = int(data.get('maxConnections', 5))
 
         # Reset campaign status
         campaign_status['errors'] = []
@@ -761,6 +951,7 @@ def send_emails():
             contact_queue.put(contact)
 
         def worker():
+            account_index = 0
             while not contact_queue.empty():
                 try:
                     email, name, language = contact_queue.get()
@@ -779,18 +970,22 @@ def send_emails():
                         
                     email_body = template.replace("[NAME]", name)
                     
+                    # Round-robin: Get the next account
+                    current_account = valid_accounts[account_index]
+                    account_index = (account_index + 1) % len(valid_accounts)
+                    
+                    success = False
                     for attempt in range(retries + 1):
                         try:
-                            if use_gmail_oauth:
+                            if current_account['type'] == 'gmail':
                                 # Send email using Gmail API
-                                creds_dict = oauth_tokens[gmail_user]
                                 credentials = Credentials(
-                                    token=creds_dict['token'],
-                                    refresh_token=creds_dict['refresh_token'],
-                                    token_uri=creds_dict['token_uri'],
-                                    client_id=creds_dict['client_id'],
-                                    client_secret=creds_dict['client_secret'],
-                                    scopes=creds_dict['scopes']
+                                    token=current_account['credentials']['token'],
+                                    refresh_token=current_account['credentials']['refresh_token'],
+                                    token_uri=current_account['credentials']['token_uri'],
+                                    client_id=current_account['credentials']['client_id'],
+                                    client_secret=current_account['credentials']['client_secret'],
+                                    scopes=current_account['credentials']['scopes']
                                 )
                                 
                                 service = build('gmail', 'v1', credentials=credentials)
@@ -823,9 +1018,17 @@ def send_emails():
                                 send_message = service.users().messages().send(
                                     userId="me", body=create_message).execute()
                                 
-                                logger.info(f'Email sent to {email} via Gmail API')
+                                logger.info(f'Email sent to {email} via Gmail API using account {current_account["email"]}')
+                                success = True
+                                break
                             else:
                                 # Send email using SMTP
+                                host = current_account['host']
+                                port = current_account['port']
+                                username = current_account['username']
+                                password = current_account['password']
+                                use_ssl = current_account.get('use_ssl', False)
+                                
                                 msg = MIMEMultipart()
                                 msg['From'] = username
                                 msg['To'] = email
@@ -843,21 +1046,31 @@ def send_emails():
                                             part.add_header('Content-Disposition', f'attachment; filename={filename}')
                                             msg.attach(part)
                                 
-                                server = smtplib.SMTP(smtp_host, port)
-                                server.starttls()
+                                if use_ssl:
+                                    server = smtplib.SMTP_SSL(host, port)
+                                else:
+                                    server = smtplib.SMTP(host, port)
+                                    server.starttls()
+                                
                                 server.login(username, password)
                                 server.send_message(msg)
                                 server.quit()
                                 
-                                logger.info(f'Email sent to {email} via SMTP')
-                            
-                            break
+                                logger.info(f'Email sent to {email} via SMTP using account {current_account["email"]}')
+                                success = True
+                                break
                         except Exception as e:
-                            logger.error(f'Error sending to {email}: {e}')
+                            logger.error(f'Error sending to {email} using account {current_account["email"]}: {e}')
                             if attempt < retries:
+                                # Try the next account in the round-robin for the retry
+                                current_account = valid_accounts[account_index]
+                                account_index = (account_index + 1) % len(valid_accounts)
                                 time.sleep(2)
                             else:
                                 campaign_status['errors'].append(f"Failed to send to {email}: {str(e)}")
+                    
+                    if not success:
+                        logger.error(f"Failed to send email to {email} after {retries + 1} attempts")
                     
                     with send_lock:
                         campaign_status['remaining'] -= 1
