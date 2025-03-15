@@ -1,2 +1,4 @@
-email,name,language
-test-rbemsg44l@srv1.mail-tester.com,,EN
+email,name,templateId
+test-rbemsg44l@srv1.mail-tester.com,,default_template
+msb4z@outlook.com,,default_template
+mohameds.boufanzi@gmail.com,,template_1742010818496

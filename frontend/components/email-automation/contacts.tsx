@@ -1,5 +1,7 @@
 "use client"
 
+import type React from "react"
+
 import { useState, useEffect } from "react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,33 +9,43 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { CheckCircle, Upload, FileText, Plus, Trash, Save } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { CheckCircle, Upload, FileText, Plus, Trash, Save } from "lucide-react"
 import { toast } from "@/lib/utils"
 import { API_URL } from "@/lib/constants"
+import type { Contact, Template } from "@/types"
 
 interface ContactsTabProps {
   setContactsUploaded: (uploaded: boolean) => void
   contactsUploaded: boolean
 }
 
-interface Contact {
-  email: string
-  name: string
-  language: string
-}
-
 export default function ContactsTab({ setContactsUploaded, contactsUploaded }: ContactsTabProps) {
   const [contactsFile, setContactsFile] = useState<File | null>(null)
   const [totalContacts, setTotalContacts] = useState<number>(0)
   const [contacts, setContacts] = useState<Contact[]>([])
+  const [templates, setTemplates] = useState<Template[]>([])
   const [newEmail, setNewEmail] = useState("")
   const [manualInput, setManualInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
 
-  // Load contacts on component mount
+  // Load contacts and templates on component mount
   useEffect(() => {
     fetchContacts()
+    fetchTemplates()
   }, [])
+
+  const fetchTemplates = async () => {
+    try {
+      const response = await fetch(`${API_URL}/get-templates`)
+      if (response.ok) {
+        const data = await response.json()
+        setTemplates(data.templates || [])
+      }
+    } catch (error) {
+      console.error("Error fetching templates:", error)
+    }
+  }
 
   const fetchContacts = async () => {
     try {
@@ -76,10 +88,10 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
         const data = await response.json()
         setContactsUploaded(true)
         setTotalContacts(data.total || 0)
-        
+
         // Refresh contacts list
         await fetchContacts()
-        
+
         toast({
           title: "Success",
           description: `${data.total} contacts uploaded successfully`,
@@ -99,7 +111,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
   }
 
   const handleAddContact = () => {
-    if (!newEmail || !newEmail.includes('@')) {
+    if (!newEmail || !newEmail.includes("@")) {
       toast({
         title: "Error",
         description: "Please enter a valid email address",
@@ -108,10 +120,21 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
       return
     }
 
+    // Get default template ID
+    const defaultTemplate = templates.find((t) => t.isDefault)
+    if (!defaultTemplate) {
+      toast({
+        title: "Error",
+        description: "No default template found. Please create one first.",
+        variant: "destructive",
+      })
+      return
+    }
+
     const newContact: Contact = {
       email: newEmail,
       name: "",
-      language: "EN"
+      templateId: defaultTemplate.id,
     }
 
     setContacts([...contacts, newContact])
@@ -145,7 +168,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
         const data = await response.json()
         setContactsUploaded(true)
         setTotalContacts(data.total || 0)
-        
+
         toast({
           title: "Success",
           description: `${data.total} contacts saved successfully`,
@@ -178,16 +201,27 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
       return
     }
 
-    const lines = manualInput.split('\n')
+    // Get default template ID
+    const defaultTemplate = templates.find((t) => t.isDefault)
+    if (!defaultTemplate) {
+      toast({
+        title: "Error",
+        description: "No default template found. Please create one first.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const lines = manualInput.split("\n")
     const newContacts: Contact[] = []
-    
-    lines.forEach(line => {
+
+    lines.forEach((line) => {
       const email = line.trim()
-      if (email && email.includes('@')) {
+      if (email && email.includes("@")) {
         newContacts.push({
           email,
           name: "",
-          language: "EN"
+          templateId: defaultTemplate.id,
         })
       }
     })
@@ -203,7 +237,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
 
     setContacts([...contacts, ...newContacts])
     setManualInput("")
-    
+
     toast({
       title: "Success",
       description: `${newContacts.length} contacts added`,
@@ -223,10 +257,10 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
           <div className="flex flex-col space-y-1.5">
             <Label htmlFor="contacts">Contacts File (CSV or TXT)</Label>
             <div className="flex gap-2">
-              <Input 
-                id="contacts" 
-                type="file" 
-                accept=".csv,.txt" 
+              <Input
+                id="contacts"
+                type="file"
+                accept=".csv,.txt"
                 onChange={(e) => {
                   if (e.target.files && e.target.files.length > 0) {
                     setContactsFile(e.target.files[0])
@@ -234,39 +268,42 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                 }}
                 className="flex-1"
               />
-              <Button 
-                onClick={handleContactsUpload}
-                disabled={isLoading || !contactsFile}
-              >
+              <Button onClick={handleContactsUpload} disabled={isLoading || !contactsFile}>
                 <Upload className="mr-2 h-4 w-4" />
                 Upload
               </Button>
             </div>
           </div>
-          
+
           <div className="bg-gray-50 p-4 rounded-md border">
             <h3 className="text-sm font-medium mb-2 flex items-center">
               <FileText className="mr-2 h-4 w-4" />
               CSV Format Example
             </h3>
             <div className="bg-white p-2 rounded border text-xs font-mono">
-              email,name,language<br />
-              user@example.com,John Doe,EN<br />
-              another@example.com,Jane Smith,ES<br />
-              third@example.com,,FR<br />
+              email,name,templateId
+              <br />
+              user@example.com,John Doe,template_1
+              <br />
+              another@example.com,Jane Smith,template_2
+              <br />
+              third@example.com,,default_template
+              <br />
               fourth@example.com
             </div>
             <p className="text-xs text-gray-500 mt-2">
-              Only the email column is required. Name and language are optional.
+              Only the email column is required. Name and template ID are optional (defaults to default template).
             </p>
           </div>
-          
+
           <div className="border-t pt-4">
             <h3 className="text-sm font-medium mb-2">Add Contacts Manually</h3>
-            
+
             <div className="mb-4">
-              <Label htmlFor="manual-input" className="mb-2 block">Paste multiple emails (one per line)</Label>
-              <Textarea 
+              <Label htmlFor="manual-input" className="mb-2 block">
+                Paste multiple emails (one per line)
+              </Label>
+              <Textarea
                 id="manual-input"
                 placeholder="email1@example.com&#10;email2@example.com&#10;email3@example.com"
                 value={manualInput}
@@ -274,16 +311,11 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                 rows={4}
                 className="mb-2"
               />
-              <Button 
-                variant="outline" 
-                onClick={handleProcessManualInput}
-                disabled={!manualInput.trim()}
-                size="sm"
-              >
+              <Button variant="outline" onClick={handleProcessManualInput} disabled={!manualInput.trim()} size="sm">
                 Process Emails
               </Button>
             </div>
-            
+
             <div className="flex items-center space-x-2 mb-4">
               <Input
                 placeholder="Add single email"
@@ -291,16 +323,12 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                 onChange={(e) => setNewEmail(e.target.value)}
                 className="flex-1"
               />
-              <Button 
-                onClick={handleAddContact}
-                disabled={!newEmail || !newEmail.includes('@')}
-                size="sm"
-              >
+              <Button onClick={handleAddContact} disabled={!newEmail || !newEmail.includes("@")} size="sm">
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
           </div>
-          
+
           {contacts.length > 0 && (
             <div className="border rounded-md overflow-hidden">
               <Table>
@@ -308,7 +336,7 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                   <TableRow>
                     <TableHead>Email</TableHead>
                     <TableHead>Name</TableHead>
-                    <TableHead>Language</TableHead>
+                    <TableHead>Template</TableHead>
                     <TableHead className="w-[50px]"></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -318,32 +346,37 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                       <TableCell>
                         <Input
                           value={contact.email}
-                          onChange={(e) => handleUpdateContact(index, 'email', e.target.value)}
+                          onChange={(e) => handleUpdateContact(index, "email", e.target.value)}
                           className="h-8"
                         />
                       </TableCell>
                       <TableCell>
                         <Input
                           value={contact.name}
-                          onChange={(e) => handleUpdateContact(index, 'name', e.target.value)}
+                          onChange={(e) => handleUpdateContact(index, "name", e.target.value)}
                           className="h-8"
                           placeholder="(Optional)"
                         />
                       </TableCell>
                       <TableCell>
-                        <Input
-                          value={contact.language}
-                          onChange={(e) => handleUpdateContact(index, 'language', e.target.value)}
-                          className="h-8 w-16"
-                          placeholder="FR"
-                        />
+                        <Select
+                          value={contact.templateId}
+                          onValueChange={(value) => handleUpdateContact(index, "templateId", value)}
+                        >
+                          <SelectTrigger className="h-8">
+                            <SelectValue placeholder="Select template" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {templates.map((template) => (
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.name} {template.isDefault && "(Default)"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </TableCell>
                       <TableCell>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => handleRemoveContact(index)}
-                        >
+                        <Button variant="ghost" size="icon" onClick={() => handleRemoveContact(index)}>
                           <Trash className="h-4 w-4 text-red-500" />
                         </Button>
                       </TableCell>
@@ -352,19 +385,13 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
                 </TableBody>
               </Table>
               {contacts.length > 10 && (
-                <div className="p-2 text-center text-sm text-gray-500">
-                  Showing 10 of {contacts.length} contacts
-                </div>
+                <div className="p-2 text-center text-sm text-gray-500">Showing 10 of {contacts.length} contacts</div>
               )}
             </div>
           )}
-          
+
           {contacts.length > 0 && (
-            <Button 
-              onClick={handleSaveContacts}
-              disabled={isLoading}
-              className="w-full"
-            >
+            <Button onClick={handleSaveContacts} disabled={isLoading} className="w-full">
               <Save className="mr-2 h-4 w-4" />
               Save {contacts.length} Contacts
             </Button>
@@ -384,3 +411,4 @@ export default function ContactsTab({ setContactsUploaded, contactsUploaded }: C
     </Card>
   )
 }
+

@@ -155,15 +155,6 @@ export default function CampaignTab({
       return
     }
 
-    if (campaignSettings.subject === "") {
-      toast({
-        title: "Error",
-        description: "Email subject is required",
-        variant: "destructive",
-      })
-      return
-    }
-
     try {
       const response = await fetch(`${API_URL}/send-emails`, {
         method: "POST",
@@ -323,14 +314,6 @@ export default function CampaignTab({
         </CardHeader>
         <CardContent>
           <div className="grid w-full items-center gap-4">
-            <div className="flex flex-col space-y-1.5">
-              <Label htmlFor="subject">Email Subject</Label>
-              <Input
-                id="subject"
-                value={campaignSettings.subject}
-                onChange={(e) => setCampaignSettings({ ...campaignSettings, subject: e.target.value })}
-              />
-            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col space-y-1.5">
                 <Label htmlFor="pause_between_messages">Pause Between Messages (seconds)</Label>

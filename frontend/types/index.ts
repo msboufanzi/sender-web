@@ -8,8 +8,21 @@ export interface SmtpConfig {
   use_ssl: boolean
 }
 
-export interface CampaignSettings {
+export interface Template {
+  id: string
+  name: string
   subject: string
+  content: string
+  isDefault: boolean
+}
+
+export interface Contact {
+  email: string
+  name: string
+  templateId: string
+}
+
+export interface CampaignSettings {
   pause_between_messages: number
   pause_between_blocks: number
   messages_per_block: number
@@ -26,7 +39,4 @@ export interface CampaignStatus {
   errors?: string[]
 }
 
-export interface EmailTemplates {
-  [language: string]: string
-}
 

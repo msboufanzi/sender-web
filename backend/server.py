@@ -64,9 +64,6 @@ API_VERSION = 'v1'
 # Global Variables
 contact_queue = queue.Queue()
 send_lock = threading.Lock()
-email_templates = {
-    'EN': 'Default English template. Hello [NAME]',  # Default template
-}
 campaign_status = {
     'is_running': False,
     'remaining': 0,
@@ -77,6 +74,19 @@ campaign_status = {
 
 # Store email accounts (both Gmail OAuth and SMTP)
 email_accounts = {}
+
+# Store templates
+templates = {}
+
+# Initialize default template
+default_template = {
+    'id': 'default_template',
+    'name': 'Default Template',
+    'subject': 'Hello from our team',
+    'content': 'Hello [NAME],\n\nThis is your default email template.',
+    'isDefault': True
+}
+templates[default_template['id']] = default_template
 
 # Store uploaded files
 data_folder = 'data'
@@ -582,11 +592,11 @@ def save_smtp_config():
         return jsonify({"error": str(e)}), 400
 
 def process_contact(contact):
-    """Process a single contact row with flexible format handling"""
+    """Process a single contact row with updated format"""
     # Default values
     email = ""
     name = ""
-    language = "EN"  # Default to English
+    template_id = default_template['id']
     
     # Handle different CSV formats
     if len(contact) >= 1:
@@ -595,12 +605,10 @@ def process_contact(contact):
     if len(contact) >= 2:
         name = contact[1]
     
-    if len(contact) >= 4:  # Format: email, name, title, language
-        language = contact[3]
-    elif len(contact) >= 3:  # Format: email, name, language
-        language = contact[2]
+    if len(contact) >= 3:
+        template_id = contact[2]
     
-    return email, name, language
+    return email, name, template_id
 
 @app.route('/upload-contacts', methods=['POST'])
 def upload_contacts():
@@ -612,11 +620,11 @@ def upload_contacts():
         if file.filename.endswith('.txt'):
             # Process TXT file (one email per line)
             with open(file_path, 'w', encoding='utf-8') as csv_file:
-                csv_file.write("email,name,language\n")  # Write header
+                csv_file.write("email,name,templateId\n")  # Updated header
                 for line in file:
                     email = line.decode('utf-8').strip()
                     if email:  # Skip empty lines
-                        csv_file.write(f"{email},,EN\n")  # Default empty name and EN language
+                        csv_file.write(f"{email},,{default_template['id']}\n")  # Use default template
         else:
             # Save as CSV
             file.save(file_path)
@@ -649,12 +657,12 @@ def get_contacts():
             reader = csv.reader(file)
             next(reader, None)  # Skip header
             for row in reader:
-                email, name, language = process_contact(row)
+                email, name, template_id = process_contact(row)
                 if email:  # Only include if email exists
                     contacts.append({
                         "email": email,
                         "name": name,
-                        "language": language
+                        "templateId": template_id
                     })
         
         logger.debug(f"Retrieved {len(contacts)} contacts")
@@ -671,12 +679,12 @@ def save_contacts():
         
         with open(file_path, 'w', encoding='utf-8', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['email', 'name', 'language'])  # Header
+            writer.writerow(['email', 'name', 'templateId'])  # Updated header
             for contact in contacts:
                 writer.writerow([
                     contact.get('email', ''),
                     contact.get('name', ''),
-                    contact.get('language', 'EN')
+                    contact.get('templateId', default_template['id'])
                 ])
                 
         # Update total count
@@ -752,22 +760,43 @@ def delete_attachment():
 
 @app.route('/save-templates', methods=['POST'])
 def save_templates():
-    global email_templates
+    global templates, default_template
     try:
-        templates = request.json
-        if not templates or not any(templates.values()):
+        data = request.json.get('templates', [])
+        
+        # Validate templates
+        if not data:
             return jsonify({"error": "At least one template is required"}), 400
             
-        email_templates = templates
-        logger.info(f"Email templates saved: {len(templates)} templates")
-        return jsonify({"message": "Email templates saved successfully!"})
+        # Check that exactly one template is default
+        default_count = sum(1 for t in data if t.get('isDefault'))
+        if default_count != 1:
+            return jsonify({"error": "Exactly one template must be set as default"}), 400
+            
+        # Clear existing templates
+        templates.clear()
+        default_template = None
+        
+        # Store new templates
+        for template_data in data:
+            template_id = template_data.get('id')
+            if not template_id:
+                template_id = f"template_{uuid.uuid4()}"
+                template_data['id'] = template_id
+                
+            templates[template_id] = template_data
+            if template_data.get('isDefault'):
+                default_template = template_data
+                
+        logger.info(f"Templates saved: {len(templates)} templates")
+        return jsonify({"message": "Templates saved successfully"})
     except Exception as e:
         logger.error(f"Error saving templates: {str(e)}")
         return jsonify({"error": str(e)}), 400
 
 @app.route('/get-templates', methods=['GET'])
 def get_templates():
-    return jsonify({"templates": email_templates})
+    return jsonify({"templates": list(templates.values())})
 
 @app.route('/test-email', methods=['POST'])
 def test_email():
@@ -783,6 +812,10 @@ def test_email():
             return jsonify({"error": "Valid account ID is required"}), 400
             
         account = email_accounts[account_id]
+        
+        # Use default template for test email
+        subject = default_template['subject']
+        body = default_template['content'].replace('[NAME]', 'Test User')
         
         if account['type'] == 'gmail':
             # Send test email using Gmail API
@@ -800,9 +833,8 @@ def test_email():
                 
                 message = MIMEMultipart()
                 message['to'] = test_email
-                message['subject'] = "Test Email from Email Automation System"
+                message['subject'] = subject
                 
-                body = "This is a test email to verify your Gmail account connection."
                 message.attach(MIMEText(body, 'plain'))
                 
                 # Encode the message
@@ -834,9 +866,8 @@ def test_email():
                 msg = MIMEMultipart()
                 msg['From'] = username
                 msg['To'] = test_email
-                msg['Subject'] = "Test Email from Email Automation System"
+                msg['Subject'] = subject
                 
-                body = "This is a test email to verify your SMTP configuration is working correctly."
                 msg.attach(MIMEText(body, 'plain'))
                 
                 if use_ssl:
@@ -904,15 +935,14 @@ def send_emails():
                 else:
                     return jsonify({"error": f"Account {account['email']} is not connected"}), 400
             else:
-                return jsonify({"error": f"Account ID {account_id} not found"}), 400
+                return jsonify({"error": f"Account ID {account_id} not found"}), 404
                 
         if not valid_accounts:
             return jsonify({"error": "No valid connected accounts selected"}), 400
-        
-        subject = data['subject']
-        delay = int(data.get('pauseBetweenMessages', 5))
+
+        delay = int(data.get('pause_between_messages', 5))
         retries = int(data.get('retries', 1))
-        max_connections = int(data.get('maxConnections', 5))
+        max_connections = int(data.get('max_connections', 5))
 
         # Reset campaign status
         campaign_status['errors'] = []
@@ -920,8 +950,8 @@ def send_emails():
         campaign_status['completed'] = False
         
         # Check if templates exist
-        if not email_templates or not any(email_templates.values()):
-            return jsonify({"error": "Please save at least one email template first"}), 400
+        if not templates:
+            return jsonify({"error": "No templates found"}), 400
 
         # Load contacts
         contacts_path = os.path.join(data_folder, 'contacts.csv')
@@ -933,9 +963,9 @@ def send_emails():
             reader = csv.reader(file)
             next(reader, None)  # Skip header
             for row in reader:
-                email, name, language = process_contact(row)
+                email, name, template_id = process_contact(row)
                 if email:  # Only include if email exists
-                    contacts.append((email, name, language))
+                    contacts.append((email, name, template_id))
 
         if not contacts:
             return jsonify({"error": "No valid contacts found in file"}), 400
@@ -954,21 +984,18 @@ def send_emails():
             account_index = 0
             while not contact_queue.empty():
                 try:
-                    email, name, language = contact_queue.get()
+                    email, name, template_id = contact_queue.get()
                     
-                    # Get template with fallback to first available template
-                    template = email_templates.get(language)
+                    # Get template with fallback to default template
+                    template = templates.get(template_id)
                     if not template:
-                        # Try to get any template
-                        for lang, tmpl in email_templates.items():
-                            if tmpl:
-                                template = tmpl
-                                break
+                        template = default_template
                     
                     if not template:
-                        raise ValueError(f"No template found for language {language}")
+                        raise ValueError(f"No template found for ID {template_id}")
                         
-                    email_body = template.replace("[NAME]", name)
+                    email_body = template['content'].replace("[NAME]", name)
+                    subject = template['subject']
                     
                     # Round-robin: Get the next account
                     current_account = valid_accounts[account_index]
